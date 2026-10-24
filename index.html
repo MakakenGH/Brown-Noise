@@ -150,7 +150,7 @@
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
     }
 
-    /* Status Bar */
+    /* Status Card */
     .status-card {
       display: flex;
       justify-content: space-between;
@@ -423,7 +423,7 @@
 <body>
 
   <!-- Background Silent Audio Element for Keeping Audio Process Alive on Mobile Screen-off -->
-  <audio id="silentAudio" loop style="display: none;" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="></audio>
+  <audio id="silentAudio" loop style="display: none;"></audio>
 
   <div class="container">
     
@@ -452,13 +452,13 @@
       <p class="app-subtitle">Deep Ambient Sound Synthesizer</p>
     </header>
 
-    <!-- Status Card (Replaces Visualizer) -->
+    <!-- Status Card -->
     <div class="card status-card">
       <div class="status-badge">
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">Stopped</span>
       </div>
-      <span style="font-size: 0.75rem; color: var(--text-muted);">v1.2.0 (Stable)</span>
+      <span style="font-size: 0.75rem; color: var(--text-muted);">v1.3.0</span>
     </div>
 
     <!-- Main Controller Card -->
@@ -536,7 +536,7 @@
   </div>
 
   <footer>
-    Standalone PWA • 100% Offline Capable • v1.2.0
+    Standalone PWA • 100% Offline Capable • v1.3.0
   </footer>
 
   <script>
@@ -545,7 +545,7 @@
        ========================================================================== */
     if ('serviceWorker' in navigator) {
       const swCode = `
-        const CACHE_NAME = 'brown-noise-pwa-v1.2.0';
+        const CACHE_NAME = 'brown-noise-pwa-v1.3.0';
         
         self.addEventListener('install', (event) => {
           self.skipWaiting();
@@ -640,14 +640,57 @@
     const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     const ICON_PAUSE = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
 
+    // Generate a valid 2-second silent WAV Blob dynamically to force Android media wake lock
+    (function initSilentAudioBlob() {
+      const sampleRate = 8000;
+      const numChannels = 1;
+      const bitsPerSample = 16;
+      const blockAlign = (numChannels * bitsPerSample) / 8;
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = sampleRate * 2; // 2 seconds
+      const chunkSize = 36 + dataSize;
+
+      const buffer = new ArrayBuffer(8 + chunkSize);
+      const view = new DataView(buffer);
+
+      function writeString(v, offset, str) {
+        for (let i = 0; i < str.length; i++) {
+          v.setUint8(offset + i, str.charCodeAt(i));
+        }
+      }
+
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, chunkSize, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      silentAudio.src = URL.createObjectURL(blob);
+    })();
+
+    // Handle visibility changes to keep audio context active when switching apps
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && isPlaying && audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    });
+
     function initAudioEngine() {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       
-      // CRITICAL FOR BLUETOOTH ON ANDROID: latencyHint 'playback' increases buffer size 
-      // and prevents buffer underruns (crackling & audio dropouts).
+      // latencyHint 'playback' ensures large buffer size against Bluetooth jitter
       audioCtx = new AudioContext({ latencyHint: 'playback' });
 
-      // Create a 10-second seamless looped noise buffer (Brownian Random Walk)
+      // 10-second seamless looped noise buffer
       const bufferSeconds = 10;
       const bufferSize = bufferSeconds * audioCtx.sampleRate;
       const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
@@ -661,8 +704,8 @@
         output[i] *= 3.5;
       }
 
-      // Smooth crossfade window at start/end to completely eliminate loop clicks
-      const fadeSamples = audioCtx.sampleRate * 0.1; // 100ms crossfade
+      // Smooth crossfade window at start/end
+      const fadeSamples = audioCtx.sampleRate * 0.1;
       for (let i = 0; i < fadeSamples; i++) {
         const fadeIn = i / fadeSamples;
         const idxEnd = bufferSize - fadeSamples + i;
@@ -699,7 +742,7 @@
       masterGainNode = audioCtx.createGain();
       masterGainNode.gain.setValueAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime);
 
-      // Audio Graph Connection (Direct to destination without analyser overhead)
+      // Audio Graph Connection
       noiseNode.connect(bassEqNode);
       bassEqNode.connect(filterNode);
       filterNode.connect(masterGainNode);
@@ -741,7 +784,7 @@
         await audioCtx.resume();
       }
 
-      // Play silent audio loop to hold background thread priority on mobile OS
+      // Play real silent audio loop to hold background thread priority on Android OS
       silentAudio.play().catch(() => {});
 
       masterGainNode.gain.setTargetAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime, 0.08);
