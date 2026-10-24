@@ -150,19 +150,12 @@
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
     }
 
-    /* Visualizer */
-    .visualizer-card {
-      position: relative;
-      padding: 0.75rem;
-      overflow: hidden;
-    }
-
-    .visualizer-header {
+    /* Status Bar */
+    .status-card {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 0.5rem;
-      padding: 0 0.5rem;
+      padding: 0.75rem 1rem;
     }
 
     .status-badge {
@@ -186,30 +179,6 @@
     .status-dot.active {
       background-color: #10b981;
       box-shadow: 0 0 8px #10b981;
-    }
-
-    .viz-mode-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--card-border);
-      color: var(--text-muted);
-      padding: 0.25rem 0.6rem;
-      border-radius: 0.5rem;
-      font-size: 0.75rem;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .viz-mode-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-    }
-
-    canvas {
-      width: 100%;
-      height: 110px;
-      display: block;
-      border-radius: 0.75rem;
-      background: rgba(0, 0, 0, 0.3);
     }
 
     /* Play Button */
@@ -483,16 +452,13 @@
       <p class="app-subtitle">Deep Ambient Sound Synthesizer</p>
     </header>
 
-    <!-- Visualizer Canvas -->
-    <div class="card visualizer-card">
-      <div class="visualizer-header">
-        <div class="status-badge">
-          <span class="status-dot" id="statusDot"></span>
-          <span id="statusText">Stopped</span>
-        </div>
-        <button class="viz-mode-btn" id="vizModeBtn">Mode: Waveform</button>
+    <!-- Status Card (Replaces Visualizer) -->
+    <div class="card status-card">
+      <div class="status-badge">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Stopped</span>
       </div>
-      <canvas id="vizCanvas"></canvas>
+      <span style="font-size: 0.75rem; color: var(--text-muted);">v1.2.0 (Stable)</span>
     </div>
 
     <!-- Main Controller Card -->
@@ -570,7 +536,7 @@
   </div>
 
   <footer>
-    Standalone PWA • 100% Offline Capable
+    Standalone PWA • 100% Offline Capable • v1.2.0
   </footer>
 
   <script>
@@ -579,7 +545,7 @@
        ========================================================================== */
     if ('serviceWorker' in navigator) {
       const swCode = `
-        const CACHE_NAME = 'brown-noise-pwa-v2';
+        const CACHE_NAME = 'brown-noise-pwa-v1.2.0';
         
         self.addEventListener('install', (event) => {
           self.skipWaiting();
@@ -650,15 +616,8 @@
     let masterGainNode = null;
     let lfoOsc = null;
     let lfoGainNode = null;
-    let analyserNode = null;
-
-    // Pre-allocated typed arrays for garbage-collection-free rendering
-    let timeDataArray = null;
-    let freqDataArray = null;
 
     let isPlaying = false;
-    let vizMode = 'waveform';
-    let animFrameId = null;
 
     // DOM References
     const silentAudio = document.getElementById('silentAudio');
@@ -678,16 +637,15 @@
     const lfoDepthSlider = document.getElementById('lfoDepthSlider');
     const lfoDepthVal = document.getElementById('lfoDepthVal');
 
-    const vizCanvas = document.getElementById('vizCanvas');
-    const vizModeBtn = document.getElementById('vizModeBtn');
-    const canvasCtx = vizCanvas.getContext('2d');
-
     const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     const ICON_PAUSE = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
 
     function initAudioEngine() {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AudioContext();
+      
+      // CRITICAL FOR BLUETOOTH ON ANDROID: latencyHint 'playback' increases buffer size 
+      // and prevents buffer underruns (crackling & audio dropouts).
+      audioCtx = new AudioContext({ latencyHint: 'playback' });
 
       // Create a 10-second seamless looped noise buffer (Brownian Random Walk)
       const bufferSeconds = 10;
@@ -741,18 +699,11 @@
       masterGainNode = audioCtx.createGain();
       masterGainNode.gain.setValueAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime);
 
-      // Visualizer Analyser & Pre-allocated Typed Arrays (GC prevention)
-      analyserNode = audioCtx.createAnalyser();
-      analyserNode.fftSize = 1024;
-      timeDataArray = new Uint8Array(analyserNode.fftSize);
-      freqDataArray = new Uint8Array(analyserNode.frequencyBinCount);
-
-      // Audio Graph Connection
+      // Audio Graph Connection (Direct to destination without analyser overhead)
       noiseNode.connect(bassEqNode);
       bassEqNode.connect(filterNode);
       filterNode.connect(masterGainNode);
-      masterGainNode.connect(analyserNode);
-      analyserNode.connect(audioCtx.destination);
+      masterGainNode.connect(audioCtx.destination);
 
       noiseNode.start(0);
       lfoOsc.start(0);
@@ -803,8 +754,6 @@
       playIcon.innerHTML = ICON_PAUSE;
       statusDot.classList.add('active');
       statusText.innerText = 'Playing';
-
-      drawVisualizer();
     }
 
     function stopPlayback() {
@@ -822,10 +771,6 @@
       playIcon.innerHTML = ICON_PLAY;
       statusDot.classList.remove('active');
       statusText.innerText = 'Paused';
-
-      if (animFrameId) {
-        cancelAnimationFrame(animFrameId);
-      }
     }
 
     playBtn.addEventListener('click', () => {
@@ -837,78 +782,7 @@
     });
 
     /* ==========================================================================
-       4. CANVAS VISUALIZER (Garbage-Collection Optimized)
-       ========================================================================== */
-    function resizeCanvas() {
-      vizCanvas.width = vizCanvas.clientWidth * window.devicePixelRatio;
-      vizCanvas.height = vizCanvas.clientHeight * window.devicePixelRatio;
-    }
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
-
-    function drawVisualizer() {
-      if (!isPlaying) return;
-
-      animFrameId = requestAnimationFrame(drawVisualizer);
-
-      const w = vizCanvas.width;
-      const h = vizCanvas.height;
-      canvasCtx.clearRect(0, 0, w, h);
-
-      if (vizMode === 'waveform') {
-        const bufferLength = analyserNode.fftSize;
-        analyserNode.getByteTimeDomainData(timeDataArray);
-
-        canvasCtx.lineWidth = 2 * window.devicePixelRatio;
-        canvasCtx.strokeStyle = '#b18e83';
-        canvasCtx.beginPath();
-
-        const sliceWidth = w / bufferLength;
-        let x = 0;
-
-        for (let i = 0; i < bufferLength; i++) {
-          const v = timeDataArray[i] / 128.0;
-          const y = (v * h) / 2;
-
-          if (i === 0) canvasCtx.moveTo(x, y);
-          else canvasCtx.lineTo(x, y);
-
-          x += sliceWidth;
-        }
-
-        canvasCtx.lineTo(w, h / 2);
-        canvasCtx.stroke();
-      } else {
-        const bufferLength = analyserNode.frequencyBinCount;
-        analyserNode.getByteFrequencyData(freqDataArray);
-
-        const barWidth = (w / bufferLength) * 2.5;
-        let barHeight;
-        let x = 0;
-
-        for (let i = 0; i < bufferLength; i++) {
-          barHeight = (freqDataArray[i] / 255) * h;
-
-          const gradient = canvasCtx.createLinearGradient(0, h, 0, 0);
-          gradient.addColorStop(0, '#38241f');
-          gradient.addColorStop(0.6, '#7d5449');
-          gradient.addColorStop(1, '#b18e83');
-
-          canvasCtx.fillStyle = gradient;
-          canvasCtx.fillRect(x, h - barHeight, barWidth, barHeight);
-
-          x += barWidth + 1;
-        }
-      }
-    }
-
-    vizModeBtn.addEventListener('click', () => {
-      vizMode = vizMode === 'waveform' ? 'spectrum' : 'waveform';
-      vizModeBtn.innerText = `Mode: ${vizMode.charAt(0).toUpperCase() + vizMode.slice(1)}`;
-    });
-
-    /* ==========================================================================
-       5. CONTROLS & PRESETS (Smoothed Parameter Changes)
+       4. CONTROLS & PRESETS (Smoothed Parameter Changes)
        ========================================================================== */
     volumeSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
