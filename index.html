@@ -377,20 +377,17 @@
   <!-- Dynamic Inline Manifest Injection Script -->
   <script>
     (function injectPWAManifest() {
-      // 1. Generate App Icon as Data URI via Canvas
       const canvas = document.createElement('canvas');
       canvas.width = 512;
       canvas.height = 512;
       const ctx = canvas.getContext('2d');
 
-      // Gradient Background
       const grad = ctx.createLinearGradient(0, 0, 512, 512);
       grad.addColorStop(0, '#1e293b');
       grad.addColorStop(1, '#0f172a');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 512, 512);
 
-      // Icon Graphic (Brown Noise Waves)
       ctx.fillStyle = '#b18e83';
       ctx.beginPath();
       ctx.arc(256, 256, 180, 0, Math.PI * 2);
@@ -401,7 +398,6 @@
       ctx.arc(256, 256, 140, 0, Math.PI * 2);
       ctx.fill();
 
-      // Waves
       ctx.strokeStyle = '#b18e83';
       ctx.lineWidth = 20;
       ctx.lineCap = 'round';
@@ -416,7 +412,6 @@
 
       const iconDataUrl = canvas.toDataURL('image/png');
 
-      // Set Apple Touch Icon & Favicon dynamically
       const appleIcon = document.createElement('link');
       appleIcon.rel = 'apple-touch-icon';
       appleIcon.href = iconDataUrl;
@@ -428,7 +423,6 @@
       favicon.href = iconDataUrl;
       document.head.appendChild(favicon);
 
-      // 2. Build Web App Manifest JSON Object
       const manifest = {
         name: "Brown Noise Generator PWA",
         short_name: "Brown Noise",
@@ -448,7 +442,6 @@
         ]
       };
 
-      // 3. Convert Manifest to Blob URL and append link element
       const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
       const manifestUrl = URL.createObjectURL(manifestBlob);
       const manifestLink = document.createElement('link');
@@ -586,7 +579,7 @@
        ========================================================================== */
     if ('serviceWorker' in navigator) {
       const swCode = `
-        const CACHE_NAME = 'brown-noise-pwa-v1';
+        const CACHE_NAME = 'brown-noise-pwa-v2';
         
         self.addEventListener('install', (event) => {
           self.skipWaiting();
@@ -597,7 +590,6 @@
         });
 
         self.addEventListener('fetch', (event) => {
-          // Serve cached response or fetch from network
           event.respondWith(
             caches.match(event.request).then((response) => {
               return response || fetch(event.request).catch(() => {
@@ -660,6 +652,10 @@
     let lfoGainNode = null;
     let analyserNode = null;
 
+    // Pre-allocated typed arrays for garbage-collection-free rendering
+    let timeDataArray = null;
+    let freqDataArray = null;
+
     let isPlaying = false;
     let vizMode = 'waveform';
     let animFrameId = null;
@@ -693,8 +689,9 @@
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContext();
 
-      // Create a 2-second looped noise buffer (Brownian Random Walk)
-      const bufferSize = 2 * audioCtx.sampleRate;
+      // Create a 10-second seamless looped noise buffer (Brownian Random Walk)
+      const bufferSeconds = 10;
+      const bufferSize = bufferSeconds * audioCtx.sampleRate;
       const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
       const output = noiseBuffer.getChannelData(0);
 
@@ -704,6 +701,16 @@
         output[i] = (lastOutput + (0.02 * white)) / 1.02;
         lastOutput = output[i];
         output[i] *= 3.5;
+      }
+
+      // Smooth crossfade window at start/end to completely eliminate loop clicks
+      const fadeSamples = audioCtx.sampleRate * 0.1; // 100ms crossfade
+      for (let i = 0; i < fadeSamples; i++) {
+        const fadeIn = i / fadeSamples;
+        const idxEnd = bufferSize - fadeSamples + i;
+        const blended = (output[i] * fadeIn) + (output[idxEnd] * (1 - fadeIn));
+        output[i] = blended;
+        output[idxEnd] = blended;
       }
 
       noiseNode = audioCtx.createBufferSource();
@@ -734,9 +741,11 @@
       masterGainNode = audioCtx.createGain();
       masterGainNode.gain.setValueAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime);
 
-      // Visualizer Analyser
+      // Visualizer Analyser & Pre-allocated Typed Arrays (GC prevention)
       analyserNode = audioCtx.createAnalyser();
       analyserNode.fftSize = 1024;
+      timeDataArray = new Uint8Array(analyserNode.fftSize);
+      freqDataArray = new Uint8Array(analyserNode.frequencyBinCount);
 
       // Audio Graph Connection
       noiseNode.connect(bassEqNode);
@@ -784,7 +793,7 @@
       // Play silent audio loop to hold background thread priority on mobile OS
       silentAudio.play().catch(() => {});
 
-      masterGainNode.gain.setTargetAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime, 0.05);
+      masterGainNode.gain.setTargetAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime, 0.08);
 
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
@@ -828,7 +837,7 @@
     });
 
     /* ==========================================================================
-       4. CANVAS VISUALIZER
+       4. CANVAS VISUALIZER (Garbage-Collection Optimized)
        ========================================================================== */
     function resizeCanvas() {
       vizCanvas.width = vizCanvas.clientWidth * window.devicePixelRatio;
@@ -848,8 +857,7 @@
 
       if (vizMode === 'waveform') {
         const bufferLength = analyserNode.fftSize;
-        const dataArray = new Uint8Array(bufferLength);
-        analyserNode.getByteTimeDomainData(dataArray);
+        analyserNode.getByteTimeDomainData(timeDataArray);
 
         canvasCtx.lineWidth = 2 * window.devicePixelRatio;
         canvasCtx.strokeStyle = '#b18e83';
@@ -859,7 +867,7 @@
         let x = 0;
 
         for (let i = 0; i < bufferLength; i++) {
-          const v = dataArray[i] / 128.0;
+          const v = timeDataArray[i] / 128.0;
           const y = (v * h) / 2;
 
           if (i === 0) canvasCtx.moveTo(x, y);
@@ -872,15 +880,14 @@
         canvasCtx.stroke();
       } else {
         const bufferLength = analyserNode.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        analyserNode.getByteFrequencyData(dataArray);
+        analyserNode.getByteFrequencyData(freqDataArray);
 
         const barWidth = (w / bufferLength) * 2.5;
         let barHeight;
         let x = 0;
 
         for (let i = 0; i < bufferLength; i++) {
-          barHeight = (dataArray[i] / 255) * h;
+          barHeight = (freqDataArray[i] / 255) * h;
 
           const gradient = canvasCtx.createLinearGradient(0, h, 0, 0);
           gradient.addColorStop(0, '#38241f');
@@ -901,45 +908,45 @@
     });
 
     /* ==========================================================================
-       5. CONTROLS & PRESETS
+       5. CONTROLS & PRESETS (Smoothed Parameter Changes)
        ========================================================================== */
     volumeSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
       volumeVal.innerText = `${Math.round(v * 100)}%`;
-      if (masterGainNode && isPlaying) {
-        masterGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.01);
+      if (masterGainNode && audioCtx && isPlaying) {
+        masterGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
       }
     });
 
     cutoffSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
       cutoffVal.innerText = `${v} Hz`;
-      if (filterNode) {
-        filterNode.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.01);
+      if (filterNode && audioCtx) {
+        filterNode.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.05);
       }
     });
 
     bassSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
       bassVal.innerText = `+${v} dB`;
-      if (bassEqNode) {
-        bassEqNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.01);
+      if (bassEqNode && audioCtx) {
+        bassEqNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
       }
     });
 
     lfoRateSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
       lfoRateVal.innerText = `${v.toFixed(2)} Hz`;
-      if (lfoOsc) {
-        lfoOsc.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.01);
+      if (lfoOsc && audioCtx) {
+        lfoOsc.frequency.setTargetAtTime(v, audioCtx.currentTime, 0.05);
       }
     });
 
     lfoDepthSlider.addEventListener('input', (e) => {
       const v = parseFloat(e.target.value);
       lfoDepthVal.innerText = `${v} Hz`;
-      if (lfoGainNode) {
-        lfoGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.01);
+      if (lfoGainNode && audioCtx) {
+        lfoGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
       }
     });
 
@@ -969,10 +976,10 @@
         lfoDepthVal.innerText = `${p.lfoDepth} Hz`;
 
         if (audioCtx) {
-          filterNode.frequency.setTargetAtTime(p.cutoff, audioCtx.currentTime, 0.05);
-          bassEqNode.gain.setTargetAtTime(p.bass, audioCtx.currentTime, 0.05);
-          lfoOsc.frequency.setTargetAtTime(p.lfoRate, audioCtx.currentTime, 0.05);
-          lfoGainNode.gain.setTargetAtTime(p.lfoDepth, audioCtx.currentTime, 0.05);
+          filterNode.frequency.setTargetAtTime(p.cutoff, audioCtx.currentTime, 0.08);
+          bassEqNode.gain.setTargetAtTime(p.bass, audioCtx.currentTime, 0.08);
+          lfoOsc.frequency.setTargetAtTime(p.lfoRate, audioCtx.currentTime, 0.08);
+          lfoGainNode.gain.setTargetAtTime(p.lfoDepth, audioCtx.currentTime, 0.08);
         }
       });
     });
