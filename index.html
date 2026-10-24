@@ -458,7 +458,7 @@
         <span class="status-dot" id="statusDot"></span>
         <span id="statusText">Stopped</span>
       </div>
-      <span style="font-size: 0.75rem; color: var(--text-muted);">v1.3.0</span>
+      <span style="font-size: 0.75rem; color: var(--text-muted);">v1.4.0</span>
     </div>
 
     <!-- Main Controller Card -->
@@ -536,7 +536,7 @@
   </div>
 
   <footer>
-    Standalone PWA • 100% Offline Capable • v1.3.0
+    Standalone PWA • 100% Offline Capable • v1.4.0
   </footer>
 
   <script>
@@ -545,7 +545,7 @@
        ========================================================================== */
     if ('serviceWorker' in navigator) {
       const swCode = `
-        const CACHE_NAME = 'brown-noise-pwa-v1.3.0';
+        const CACHE_NAME = 'brown-noise-pwa-v1.4.0';
         
         self.addEventListener('install', (event) => {
           self.skipWaiting();
@@ -640,14 +640,14 @@
     const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     const ICON_PAUSE = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
 
-    // Generate a valid 2-second silent WAV Blob dynamically to force Android media wake lock
+    // Generate a valid 2-second silent WAV Blob
     (function initSilentAudioBlob() {
       const sampleRate = 8000;
       const numChannels = 1;
       const bitsPerSample = 16;
       const blockAlign = (numChannels * bitsPerSample) / 8;
       const byteRate = sampleRate * blockAlign;
-      const dataSize = sampleRate * 2; // 2 seconds
+      const dataSize = sampleRate * 2;
       const chunkSize = 36 + dataSize;
 
       const buffer = new ArrayBuffer(8 + chunkSize);
@@ -677,10 +677,23 @@
       silentAudio.src = URL.createObjectURL(blob);
     })();
 
-    // Handle visibility changes to keep audio context active when switching apps
+    // WATCHDOG: If Android pauses or ends the silent audio element, instantly restart it to hold wake lock
+    silentAudio.addEventListener('ended', () => {
+      if (isPlaying) silentAudio.play().catch(() => {});
+    });
+    silentAudio.addEventListener('pause', () => {
+      if (isPlaying) silentAudio.play().catch(() => {});
+    });
+
+    // Handle visibility changes and AudioContext state recovery
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && isPlaying && audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume();
+      if (!document.hidden && isPlaying) {
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        if (silentAudio.paused) {
+          silentAudio.play().catch(() => {});
+        }
       }
     });
 
@@ -784,7 +797,7 @@
         await audioCtx.resume();
       }
 
-      // Play real silent audio loop to hold background thread priority on Android OS
+      // Play silent audio loop to hold background thread priority on Android OS
       silentAudio.play().catch(() => {});
 
       masterGainNode.gain.setTargetAtTime(parseFloat(volumeSlider.value), audioCtx.currentTime, 0.08);
@@ -887,7 +900,8 @@
         bassVal.innerText = `+${p.bass} dB`;
 
         lfoRateSlider.value = p.lfoRate;
-        lfoRateVal.innerText = `${p.lfoRate.toFixed(2)} Hz`;
+        l_rate_text = `${p.lfoRate.toFixed(2)} Hz`;
+        lfoRateVal.innerText = l_rate_text;
 
         lfoDepthSlider.value = p.lfoDepth;
         lfoDepthVal.innerText = `${p.lfoDepth} Hz`;
